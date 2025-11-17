@@ -1,16 +1,37 @@
 # =======================
-# LOST & FOUND INTAKE SYSTEM
+# LOST AND FOUND INTAKE SYSTEM
 # =======================
 
 import streamlit as st
-import sqlite3, json, re
+import sqlite3
+import json
+import re
 from datetime import datetime, timezone
 from PIL import Image
 import pandas as pd
 from google import genai
 
-# --- Initialize Gemini client ---
-gemini_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+# =======================
+# GEMINI CLIENT
+# =======================
+
+@st.cache_resource
+def get_gemini_client():
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        st.error("GEMINI_API_KEY is not set in Streamlit secrets.")
+        return None
+
+    try:
+        client = genai.Client(api_key=api_key)
+        return client
+    except Exception as e:
+        st.error(f"Error initializing Gemini client: {e}")
+        return None
+
+
+gemini_client = get_gemini_client()
 
 # =======================
 # PROMPTS
@@ -18,156 +39,155 @@ gemini_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
 GENERATOR_SYSTEM_PROMPT = """
 Role:
-You are a Lost & Found intake operator for a public-transit system. Your job is to gather accurate, factual information
-about a lost item, refine the description interactively with the user, and automatically pass the finalized record to a second GPT
-for tag standardization.
+You are a Lost & Found intake operator for a public transit system. Your job is to gather accurate factual information
+about a found item, refine the description interactively with the user, and output a single final structured record.
 
 Behavior Rules:
 1. Input Handling
 The user may provide either an image or a short text description.
-If an image is provided, immediately describe visible traits (color, material, type, size, markings, notable features).
-If text is provided, restate and cleanly summarize it in factual language. Do not wait for confirmation before generating the first description.
+If an image is provided, describe visible traits such as color, material, type, size, markings, and notable features.
+If text is provided, restate and cleanly summarize it in factual language.
+Do not wait for confirmation before giving the first description.
+
 2. Clarification
-After your initial description, ask targeted, concise follow-up questions to collect identifying details such as brand, condition,
-writing, contents, location (station), and time lost.
-If the user provides a station name (e.g., “Times Sq”, “Queensboro Plaza”), automatically identify the corresponding MTA subway line(s)
-and record them in the Subway Location field.
-Example: “Times Sq” → Lines 1, 2, 3, 7, N, Q, R, W, S.
-If multiple lines serve the station, include all.
-However, if the station name has 4 or more subway lines, record only the station name in the Subway Location field.
-If the station name is unclear or not found, set Subway Location to null.
-As the user answers, update and refine your internal description dynamically.
-Stop asking questions once enough information has been gathered for a clear and specific description.
-Do not include the questions or intermediate notes in the final output.
+Ask targeted concise follow up questions to collect identifying details such as brand, condition,
+writing, contents, location (station), and time found.
+If the user provides a station name (for example “Times Sq”, “Queensboro Plaza”), try to identify the corresponding subway line or lines.
+If multiple lines serve the station, you can mention all of them. If the station name has four or more lines, record only the station name.
+If the station is unclear or unknown, set Subway Location to null.
+Stop asking questions once the description is clear and specific enough.
+Do not include questions or notes in the final output.
+
 3. Finalization
-When the user says they are finished, or you have enough detail, generate only the final structured record in this format:
-Subway Location: <observed or user-provided line, or null>
-Color: <dominant or user-provided color(s), or null>
-Item Category: <free-text category, e.g., Bags & Accessories, Electronics, Clothing, or null>
-Item Type: <free-text item type, e.g., Backpack, Phone, Jacket, or null>
-Description: <concise free-text summary combining all verified details>
+When you have enough detail, output only this structured record:
+
+Subway Location: <station or null>
+Color: <dominant or user provided colors or null>
+Item Category: <free text category such as Bags and Accessories, Electronics, Clothing or null>
+Item Type: <free text item type such as Backpack, Phone, Jacket or null>
+Description: <concise free text summary combining all verified details>
 """
 
 USER_SIDE_GENERATOR_PROMPT = """
-You are a helpful assistant helping subway riders report lost items.
+You are a helpful assistant for riders reporting lost items on a subway system.
 
 Input:
-The user may provide either an image or a short text description of their item.
-If an image is provided, begin by describing what you see — include visible traits such as color, material, size, shape, and any markings or distinctive details.
-If text is provided, restate their message cleanly in factual language.
+The user may provide an image or a short text description of the lost item.
+If an image is provided, describe what you see, including color, material, size, shape, and any markings.
+If text is provided, restate the description in clean factual language.
 
 Clarification:
-Then, ask 2–4 concise follow-up questions to collect identifying details such as:
-- color (if not already clear from the image),
-- brand or logo,
-- contents (if a bag or container),
-- any markings or writing,
-- where it was lost (station name),
-- and approximate time.
+Then ask two to four short follow up questions to collect details such as:
+color if unclear, brand or logo, contents if it is a bag, any writing, where it was lost,
+and approximate time.
 
-When you have enough details, output ONLY the structured record in this format:
+When you have enough information, output only this structured record:
 
 Subway Location: <station name or null>
-Color: <color(s) or null>
+Color: <color or colors or null>
 Item Category: <category or null>
 Item Type: <type or null>
-Description: <concise factual summary combining all verified details>
+Description: <concise factual summary>
 
-Guidelines:
-- Keep your tone concise and factual.
-- Do not include your reasoning or notes.
-- Do not output questions or conversation history in the final structured record.
+Do not include your questions or reasoning in the final structured record.
 """
 
 STANDARDIZER_PROMPT = """
-You are the Lost & Found Data Standardizer for a public-transit system. You receive structured text from another model describing a lost item. Your job is to map free-text fields to standardized tag values and produce a clean JSON record ready for database storage.
+You are the Lost and Found Data Standardizer for a public transit system.
+You receive structured text from another model describing an item.
+Your task is to map free text fields to standardized tag values and produce a clean JSON record.
 
-Data Source:
-All valid standardized values are stored in the Tags Excel reference file uploaded.
-This file is the only source of truth for all mappings.
-The Tags Excel contains separate tabs or columns for the following standardized lists:
+Tag Source:
+All valid standardized values are in the provided Tags Excel reference summary.
+Use only those lists to choose values.
 
-Subway Location → All valid subway lines and station names
-Item Category → All valid item category names
-Item Type → All valid item type names
-Color → All valid color names
+Field rules:
 
-When standardizing input text:
+Subway Location:
+Compare only with the Subway Location tag list.
+Color:
+Compare only with the Color tag list.
+Item Category:
+Compare only with the Item Category tag list.
+Item Type:
+Compare only with the Item Type tag list.
 
-Always match each field only against its corresponding tag list:
-subway_location → compare only with values in Subway Location
-color → compare only with values in Color
-item_category → compare only with values in Item Category
-item_type → compare only with values in Item Type
-Never mix across tag types.
-Use exact or closest textual matches from the relevant tag column only.
-If no valid match is found, return "null".
-Output the standardized value exactly as it appears in the Excel file — no prefixes, suffixes, or formatting changes.
+Use exact or closest textual matches from the correct list only.
+If no good match exists return "null" for that field.
 
-Behavior Rules:
-1. Input Format:
-You will receive input in this structure:
+Input format:
+
 Subway Location: <value or null>
 Color: <value or null>
 Item Category: <value or null>
 Item Type: <value or null>
-Description: <free-text description>
+Description: <free text description>
 
-2. Standardization:
-Use the provided Tags Excel reference to ensure consistent value mapping.
-Subway Location: Match to valid MTA lines or stations. If none or unclear, output "null".
-Color: Match to standardized color names. If multiple colors appear, include all as an array.
-Item Category: Map to a consistent category.
-Item Type: Map to consistent type(s). If multiple types appear, include all as an array.
-Description: Leave as free text but clean it up.
-Time: Record the current system time (ISO 8601 UTC).
+Output:
 
-3. Output Format:
-Produce only a JSON object (no explanations):
+Return only a JSON object of this form:
+
 {
-  "subway_location": ["<line1>", "<line2>"],
+  "subway_location": ["<line or station>", "<line or station>"],
   "color": ["<color1>", "<color2>"],
   "item_category": "<standardized category or null>",
-  "item_type": ["<standardized type>", "<standardized type>"],
-  "description": "<clean final description>",
+  "item_type": ["<type1>", "<type2>"],
+  "description": "<clean description>",
   "time": "<ISO 8601 UTC timestamp>"
 }
 
-4. Behavior Guidelines:
-- Do not guess missing details.
-- If uncertain, leave field as null.
-- Ensure valid JSON output.
-- Only output the JSON object, nothing else.
+If a field has a single value it is still an array where the specification says array.
+If you cannot confidently match a value, use "null" or an empty array as appropriate.
+
+Do not output any explanation. Only output the JSON object.
 """
 
 # =======================
 # DATA HELPERS
 # =======================
 
+
 @st.cache_data
 def load_tag_data():
+    """
+    Load Tags.xlsx and prepare tag lists.
+    Expected columns: Subway Location, Color, Item Category, Item Type.
+    """
     try:
         df = pd.read_excel("Tags.xlsx")
         return {
             "df": df,
-            "locations": sorted(set(df["Subway Location"].dropna())),
-            "colors": sorted(set(df["Color"].dropna())),
-            "categories": sorted(set(df["Item Category"].dropna())),
-            "item_types": sorted(set(df["Item Type"].dropna()))
+            "locations": sorted(set(df["Subway Location"].dropna().astype(str))),
+            "colors": sorted(set(df["Color"].dropna().astype(str))),
+            "categories": sorted(set(df["Item Category"].dropna().astype(str))),
+            "item_types": sorted(set(df["Item Type"].dropna().astype(str))),
         }
     except Exception as e:
         st.error(f"Error loading tag data: {e}")
         return None
 
 
-def extract_field(text, field):
+def extract_field(text: str, field: str) -> str:
+    """Extract a simple `Field: value` line from a structured block."""
     match = re.search(rf"{field}:\s*(.*)", text)
     return match.group(1).strip() if match else "null"
 
-def standardize_description(text, tags):
-    """Send structured text + tag data to Gemini for JSON standardization."""
+
+def is_structured_record(message: str) -> bool:
+    """Detect if the message looks like the final structured record."""
+    return message.strip().startswith("Subway Location:")
+
+
+def standardize_description(text: str, tags: dict) -> dict:
+    """
+    Send structured text and tag data summary to Gemini for JSON standardization.
+    """
+    if gemini_client is None:
+        st.error("Gemini client is not available. Cannot standardize description.")
+        return {}
+
     tags_summary = (
-        f"\n--- TAGS REFERENCE ---\n"
+        "\n--- TAGS REFERENCE ---\n"
         f"Subway Location tags: {', '.join(tags['locations'][:50])}\n"
         f"Color tags: {', '.join(tags['colors'][:50])}\n"
         f"Item Category tags: {', '.join(tags['categories'][:50])}\n"
@@ -176,17 +196,40 @@ def standardize_description(text, tags):
 
     full_prompt = f"{STANDARDIZER_PROMPT}\n\nHere is the structured input to standardize:\n{text}\n{tags_summary}"
 
-    model = gemini_client.models.get("gemini-1.5-flash")
-    response = model.generate_content(full_prompt)
     try:
-        # Extract valid JSON from model output
+        model = gemini_client.models.get("gemini-1.5-flash")
+        response = model.generate_content(full_prompt)
+    except Exception as e:
+        st.error(f"Error calling Gemini for standardization: {e}")
+        return {}
+
+    try:
         cleaned = response.text.strip()
         json_start = cleaned.find("{")
         json_end = cleaned.rfind("}") + 1
         json_text = cleaned[json_start:json_end]
-        return json.loads(json_text)
+        data = json.loads(json_text)
+
+        # Ensure required keys exist and fill time if missing
+        if "time" not in data or not data["time"]:
+            data["time"] = datetime.now(timezone.utc).isoformat()
+
+        # Normalize list type fields
+        for key in ["subway_location", "color", "item_type"]:
+            if key in data and isinstance(data[key], str):
+                data[key] = [data[key]]
+            elif key not in data:
+                data[key] = []
+
+        if "item_category" not in data:
+            data["item_category"] = "null"
+
+        if "description" not in data:
+            data["description"] = extract_field(text, "Description")
+
+        return data
     except Exception:
-        st.error("Model output could not be parsed as JSON. Displaying raw output:")
+        st.error("Model output could not be parsed as JSON. Raw output is displayed below.")
         st.text(response.text)
         return {}
 
@@ -195,164 +238,264 @@ def standardize_description(text, tags):
 # DATABASE HELPERS
 # =======================
 
+
 def init_db():
-    conn = sqlite3.connect("lost_and_found.db")
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS found_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            caption TEXT,
-            location TEXT,
-            contact TEXT,
-            image_path TEXT,
-            json_data TEXT
+    with sqlite3.connect("lost_and_found.db") as conn:
+        c = conn.cursor()
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS found_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                caption TEXT,
+                location TEXT,
+                contact TEXT,
+                image_path TEXT,
+                json_data TEXT
+            )
+        """
         )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS lost_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            description TEXT,
-            contact TEXT,
-            email TEXT,
-            json_data TEXT
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lost_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                description TEXT,
+                contact TEXT,
+                email TEXT,
+                json_data TEXT
+            )
+        """
         )
-    """)
-    conn.commit()
-    conn.close()
+        conn.commit()
+
 
 def add_found_item(caption, location, contact, image_path, json_data_string):
-    conn = sqlite3.connect("lost_and_found.db")
-    c = conn.cursor()
-    c.execute("INSERT INTO found_items (caption, location, contact, image_path, json_data) VALUES (?, ?, ?, ?, ?)",
-              (caption, location, contact, image_path, json_data_string))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect("lost_and_found.db") as conn:
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO found_items (caption, location, contact, image_path, json_data)
+            VALUES (?, ?, ?, ?, ?)
+        """,
+            (caption, location, contact, image_path, json_data_string),
+        )
+        conn.commit()
+
 
 def add_lost_item(description, contact, email, json_data_string):
-    conn = sqlite3.connect("lost_and_found.db")
-    c = conn.cursor()
-    c.execute("INSERT INTO lost_items (description, contact, email, json_data) VALUES (?, ?, ?, ?)",
-              (description, contact, email, json_data_string))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect("lost_and_found.db") as conn:
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO lost_items (description, contact, email, json_data)
+            VALUES (?, ?, ?, ?)
+        """,
+            (description, contact, email, json_data_string),
+        )
+        conn.commit()
+
+
+def validate_phone(phone: str) -> bool:
+    return bool(re.fullmatch(r"\d{10}", phone))
+
+
+def validate_email(email: str) -> bool:
+    return "@" in email and "." in email.split("@")[-1]
 
 
 # =======================
 # STREAMLIT UI
 # =======================
 
-st.set_page_config(page_title="Lost & Found Intake", page_icon="🧳", layout="wide")
+st.set_page_config(
+    page_title="Lost and Found Intake",
+    page_icon="🧳",
+    layout="wide",
+)
+
 init_db()
 
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to:", ["Upload Found Item (Operator)", "Report Lost Item (User)"])
+page = st.sidebar.radio(
+    "Go to",
+    ["Upload Found Item (Operator)", "Report Lost Item (User)"],
+)
 
 
 # ===============================================================
-# OPERATOR SIDE (CHAT INTAKE)
+# OPERATOR SIDE
 # ===============================================================
 
 if page == "Upload Found Item (Operator)":
-    st.title("Operator: Describe Found Item")
+    st.title("Operator View: Upload Found Item")
 
     tag_data = load_tag_data()
-    if not tag_data: st.stop()
+    if not tag_data:
+        st.stop()
+
+    if gemini_client is None:
+        st.info("Gemini is not available. You can still use manual fields but automated description will not run.")
+        st.stop()
 
     if "operator_chat" not in st.session_state:
         st.session_state.operator_chat = gemini_client.models.start_chat(
             system_instruction=GENERATOR_SYSTEM_PROMPT
         )
         st.session_state.operator_msgs = []
-        st.session_state.operator_done = False
 
+    # Show running conversation
     for msg in st.session_state.operator_msgs:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Initial input
+    # Initial intake
     if not st.session_state.operator_msgs:
-        uploaded_image = st.file_uploader("Upload an image of the found item (optional)", type=["jpg","jpeg","png"])
-        initial_text = st.text_input("Or briefly describe the item")
+        st.markdown("Start by uploading an image or giving a short description of the found item.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            uploaded_image = st.file_uploader(
+                "Image of the found item (optional)",
+                type=["jpg", "jpeg", "png"],
+                key="operator_image",
+            )
+        with col2:
+            initial_text = st.text_input(
+                "Short description",
+                placeholder="For example black backpack with a NASA patch",
+                key="operator_text",
+            )
 
         if st.button("Start Intake"):
             if not uploaded_image and not initial_text:
-                st.error("Please upload or describe the item.")
+                st.error("Please upload an image or enter a short description.")
             else:
                 prompt_parts = []
                 message_content = ""
+
                 if uploaded_image:
                     img = Image.open(uploaded_image).convert("RGB")
                     st.image(img, width=200)
                     prompt_parts.append(img)
                     message_content += "Image uploaded.\n"
+
                 if initial_text:
                     prompt_parts.append(initial_text)
                     message_content += initial_text
 
-                st.session_state.operator_msgs.append({"role":"user","content":message_content})
-                with st.spinner("Analyzing..."):
+                st.session_state.operator_msgs.append(
+                    {"role": "user", "content": message_content}
+                )
+                with st.spinner("Analyzing item"):
                     response = st.session_state.operator_chat.send_message(prompt_parts)
-                st.session_state.operator_msgs.append({"role":"model","content":response.text})
+                st.session_state.operator_msgs.append(
+                    {"role": "model", "content": response.text}
+                )
                 st.rerun()
 
-    if operator_prompt := st.chat_input("Add more details..."):
-        st.session_state.operator_msgs.append({"role":"user","content":operator_prompt})
-        with st.spinner("Processing..."):
-            response = st.session_state.operator_chat.send_message(operator_prompt)
-        st.session_state.operator_msgs.append({"role":"model","content":response.text})
+    # Continue chat
+    operator_input = st.chat_input("Add more details or say done when ready")
+    if operator_input:
+        st.session_state.operator_msgs.append(
+            {"role": "user", "content": operator_input}
+        )
+        with st.spinner("Processing"):
+            response = st.session_state.operator_chat.send_message(operator_input)
+        st.session_state.operator_msgs.append(
+            {"role": "model", "content": response.text}
+        )
         st.rerun()
 
-    # Detect final structured text
-    if st.session_state.operator_msgs and st.session_state.operator_msgs[-1]["content"].startswith("Subway Location:"):
+    # Check for final structured record
+    if st.session_state.operator_msgs and is_structured_record(
+        st.session_state.operator_msgs[-1]["content"]
+    ):
         structured_text = st.session_state.operator_msgs[-1]["content"]
+        st.markdown("### Final structured description")
+        st.code(structured_text)
+
         final_json = standardize_description(structured_text, tag_data)
-        st.success("Structured description generated:")
-        st.json(final_json)
-        contact = st.text_input("Operator Contact/Badge ID")
-        if st.button("Save Found Item"):
-            add_found_item(final_json["description"], final_json["subway_location"][0],
-                           contact, "", json.dumps(final_json))
-            st.success("Saved successfully!")
+        if final_json:
+            st.success("Standardized JSON")
+            st.json(final_json)
+
+            contact = st.text_input("Operator contact or badge")
+            if st.button("Save Found Item"):
+                location_value = (
+                    final_json["subway_location"][0]
+                    if final_json.get("subway_location")
+                    else ""
+                )
+                add_found_item(
+                    final_json.get("description", ""),
+                    location_value,
+                    contact,
+                    "",
+                    json.dumps(final_json),
+                )
+                st.success("Found item saved to database.")
 
 
 # ===============================================================
-# USER SIDE (HYBRID DROPDOWN + CHAT)
+# USER SIDE
 # ===============================================================
 
 if page == "Report Lost Item (User)":
-    st.title("Report Your Lost Item")
+    st.title("User View: Report a Lost Item")
 
     tag_data = load_tag_data()
-    if not tag_data: 
+    if not tag_data:
         st.stop()
 
-    # Step 1: Quick dropdowns (excluding color)
-    with st.expander("Quick Info (Optional)"):
-        location = st.selectbox("Subway Station", [""] + tag_data["locations"])
-        category = st.selectbox("Item Category", [""] + tag_data["categories"])
-        item_type = st.selectbox("Item Type", [""] + tag_data["item_types"])
+    if gemini_client is None:
+        st.info("Gemini is not available. You can still submit details manually, but auto structuring will not run.")
+        st.stop()
 
-    # Step 2: Image upload or text start
-    st.subheader("Describe or Show Your Lost Item")
-    uploaded_image = st.file_uploader("Upload an image of your lost item (optional)", type=["jpg","jpeg","png"])
-    initial_text = st.text_input("Or describe it briefly (e.g., 'a red leather backpack with gold zippers')")
+    st.markdown("You can give quick info using dropdowns, then refine with chat.")
+
+    with st.expander("Optional quick info"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            location_choice = st.selectbox(
+                "Subway station (optional)", [""] + tag_data["locations"]
+            )
+        with col2:
+            category_choice = st.selectbox(
+                "Item category (optional)", [""] + tag_data["categories"]
+            )
+        with col3:
+            type_choice = st.selectbox(
+                "Item type (optional)", [""] + tag_data["item_types"]
+            )
+
+    st.subheader("Describe or show your lost item")
+    col_img, col_text = st.columns(2)
+    with col_img:
+        uploaded_image = st.file_uploader(
+            "Image of lost item (optional)",
+            type=["jpg", "jpeg", "png"],
+            key="user_image",
+        )
+    with col_text:
+        initial_text = st.text_input(
+            "Short description",
+            placeholder="For example blue iPhone with cracked screen",
+            key="user_text",
+        )
 
     if "user_chat" not in st.session_state:
         st.session_state.user_chat = gemini_client.models.start_chat(
             system_instruction=USER_SIDE_GENERATOR_PROMPT
         )
         st.session_state.user_msgs = []
-        st.session_state.user_done = False
 
-    # Display chat history
+    # Show chat history
     for msg in st.session_state.user_msgs:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # --- Start the chat ---
     if not st.session_state.user_msgs and st.button("Start Report"):
         if not uploaded_image and not initial_text:
-            st.error("Please upload an image or provide a description.")
+            st.error("Please upload an image or enter a short description.")
         else:
             parts = []
             message_text = ""
@@ -364,40 +507,65 @@ if page == "Report Lost Item (User)":
             if initial_text:
                 parts.append(initial_text)
                 message_text += initial_text
-            st.session_state.user_msgs.append({"role": "user", "content": message_text})
-            with st.spinner("Analyzing..."):
+
+            st.session_state.user_msgs.append(
+                {"role": "user", "content": message_text}
+            )
+            with st.spinner("Analyzing"):
                 response = st.session_state.user_chat.send_message(parts)
-            st.session_state.user_msgs.append({"role": "model", "content": response.text})
+            st.session_state.user_msgs.append(
+                {"role": "model", "content": response.text}
+            )
             st.rerun()
 
-    # Continue conversation
-    if user_input := st.chat_input("Add more details..."):
-        st.session_state.user_msgs.append({"role": "user", "content": user_input})
-        with st.spinner("Thinking..."):
+    user_input = st.chat_input("Add more details or say done when ready")
+    if user_input:
+        st.session_state.user_msgs.append(
+            {"role": "user", "content": user_input}
+        )
+        with st.spinner("Thinking"):
             response = st.session_state.user_chat.send_message(user_input)
-        st.session_state.user_msgs.append({"role": "model", "content": response.text})
+        st.session_state.user_msgs.append(
+            {"role": "model", "content": response.text}
+        )
         st.rerun()
 
-    # Step 3: When final structured record appears
-    if st.session_state.user_msgs and st.session_state.user_msgs[-1]["content"].startswith("Subway Location:"):
+    # When final structured record appears
+    if st.session_state.user_msgs and is_structured_record(
+        st.session_state.user_msgs[-1]["content"]
+    ):
         structured_text = st.session_state.user_msgs[-1]["content"]
+
         merged_text = f"""
-        Subway Location: {location or extract_field(structured_text, 'Subway Location')}
-        Color: {extract_field(structured_text, 'Color')}
-        Item Category: {category or extract_field(structured_text, 'Item Category')}
-        Item Type: {item_type or extract_field(structured_text, 'Item Type')}
-        Description: {extract_field(structured_text, 'Description')}
+Subway Location: {location_choice or extract_field(structured_text, 'Subway Location')}
+Color: {extract_field(structured_text, 'Color')}
+Item Category: {category_choice or extract_field(structured_text, 'Item Category')}
+Item Type: {type_choice or extract_field(structured_text, 'Item Type')}
+Description: {extract_field(structured_text, 'Description')}
         """
 
-        final_json = standardize_description(merged_text, tag_data)
-        st.success("Standardized Record:")
-        st.json(final_json)
+        st.markdown("### Final merged record before standardization")
+        st.code(merged_text)
 
-        contact = st.text_input("Contact Number (10 digits)")
-        email = st.text_input("Email Address")
-        if st.button("Submit Lost Item Report"):
-            if not contact or not email:
-                st.error("Please provide contact info.")
-            else:
-                add_lost_item(final_json["description"], contact, email, json.dumps(final_json))
-                st.success("Lost item report submitted successfully!")
+        final_json = standardize_description(merged_text, tag_data)
+        if final_json:
+            st.success("Standardized record")
+            st.json(final_json)
+
+            st.markdown("### Contact information")
+            contact = st.text_input("Phone number, ten digits")
+            email = st.text_input("Email address")
+
+            if st.button("Submit Lost Item Report"):
+                if not validate_phone(contact):
+                    st.error("Please enter a ten digit phone number without spaces.")
+                elif not validate_email(email):
+                    st.error("Please enter a valid email address.")
+                else:
+                    add_lost_item(
+                        final_json.get("description", ""),
+                        contact,
+                        email,
+                        json.dumps(final_json),
+                    )
+                    st.success("Lost item report submitted.")
