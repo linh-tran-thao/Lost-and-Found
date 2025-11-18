@@ -1,9 +1,9 @@
 streamlit
 google-genai
-langchain>=0.3.0
-langchain-community>=0.3.0
+langchain
+langchain-community
+langchain-openai
 pgvector
 psycopg2-binary
-openai
 pandas
 pillow
