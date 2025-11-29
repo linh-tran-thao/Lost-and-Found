@@ -73,7 +73,7 @@ gemini_client = get_gemini_client()
 def get_vector_store():
     """
     Create or load a Chroma vector DB using OpenAI embeddings.
-    This stores all *found* items with metadata.
+    Stores all *found* items with metadata.
     """
     if not secrets["openai_key"]:
         st.warning("OPENAI_API_KEY is not set; semantic matching will be disabled.")
@@ -383,10 +383,10 @@ def save_found_item_to_vectorstore(json_data: Dict, contact: str) -> int:
         return -1
 
 
-def search_matches_for_lost_item(final_json: Dict, top_k: int, max_distance: float):
+def search_matches_for_lost_item(final_json: Dict, top_k: int):
     """
-    Use vector DB (Chroma) to search for similar found items.
-    Assumes similarity_search_with_score returns distance (lower is better).
+    Use Chroma to search for similar found items.
+    Returns raw (doc, score) tuples. Score is a distance (lower = better).
     """
     if vector_store is None:
         return []
@@ -406,22 +406,14 @@ def search_matches_for_lost_item(final_json: Dict, top_k: int, max_distance: flo
             k=top_k,
             filter=filter_dict,
         )
+        return docs_scores
     except Exception as e:
         st.error(f"Error during vector search: {e}")
-        docs_scores = []
-
-    # Apply distance threshold
-    filtered = [
-        (doc, score) for doc, score in docs_scores if score <= max_distance
-    ]
-
-    return docs_scores, filtered
+        return []
 
 
 def get_all_found_items_as_df() -> pd.DataFrame:
-    """
-    Pull all "found" items from Chroma for admin view.
-    """
+    """Pull all 'found' items from Chroma for admin view."""
     if vector_store is None:
         return pd.DataFrame()
 
@@ -442,7 +434,6 @@ def get_all_found_items_as_df() -> pd.DataFrame:
             continue
         if meta.get("record_type") != "found":
             continue
-
         rows.append(
             {
                 "found_id": meta.get("found_id", id_),
@@ -716,13 +707,13 @@ Description: {extract_field(structured_text, 'Description')}
                 value=5,
                 step=1,
             )
-            max_distance = st.slider(
-                "Maximum distance (lower = more similar)",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.4,
-                step=0.01,
-                help="Matches with distance greater than this will be hidden.",
+            match_threshold = st.slider(
+                "Match threshold (approx. similarity, %)",
+                min_value=0,
+                max_value=100,
+                value=60,
+                step=5,
+                help="Only show matches with similarity at or above this percentage.",
             )
 
             if st.button("Submit Lost Item & Find Matches"):
@@ -741,30 +732,28 @@ Description: {extract_field(structured_text, 'Description')}
                         with st.spinner(
                             "Searching for similar found items using embeddings..."
                         ):
-                            all_candidates, filtered = search_matches_for_lost_item(
-                                final_json, top_k=top_k, max_distance=max_distance
+                            docs_scores = search_matches_for_lost_item(
+                                final_json, top_k=top_k
                             )
 
-                        if not all_candidates:
+                        if not docs_scores:
                             st.info(
                                 "No items are stored in the vector DB yet, so no matches can be returned."
                             )
                         else:
                             st.subheader("Top candidate matches")
 
-                            if not filtered:
-                                st.info(
-                                    "No matches under the current distance threshold. "
-                                    "Showing raw top-K candidates instead."
-                                )
-                                to_show = all_candidates
-                            else:
-                                to_show = filtered
-
-                            for doc, score in to_show:
+                            shown_any = False
+                            for doc, score in docs_scores:
                                 meta = doc.metadata or {}
-                                similarity_pct = max(0.0, (1.0 - score) * 100.0)
+                                # Chroma returns a distance; roughly convert to similarity [0,1]
+                                similarity = max(0.0, 1.0 - float(score))
+                                similarity_pct = similarity * 100.0
 
+                                if similarity_pct < match_threshold:
+                                    continue
+
+                                shown_any = True
                                 st.markdown(
                                     f"**Distance:** `{score:.4f}`  |  "
                                     f"**Similarity (approx):** `{similarity_pct:.1f}%`"
@@ -774,21 +763,27 @@ Description: {extract_field(structured_text, 'Description')}
 
                                 if meta.get("subway_location"):
                                     st.write(
-                                        f"Location: {', '.join(meta['subway_location'])}"
+                                        "Location: "
+                                        + ", ".join(meta["subway_location"])
                                     )
                                 if meta.get("color"):
                                     st.write(
-                                        f"Color: {', '.join(meta['color'])}"
+                                        "Color: " + ", ".join(meta["color"])
                                     )
                                 if meta.get("item_category"):
                                     st.write(f"Category: {meta['item_category']}")
                                 if meta.get("item_type"):
                                     st.write(
-                                        f"Type: {', '.join(meta['item_type'])}"
+                                        "Type: " + ", ".join(meta["item_type"])
                                     )
 
                                 st.json(meta)
                                 st.markdown("---")
+
+                            if not shown_any:
+                                st.info(
+                                    "No matches above the current similarity threshold. Try lowering it."
+                                )
 
 
 # ===============================================================
@@ -806,4 +801,3 @@ if page == "Admin: View Found Items":
             st.info("No found items stored yet.")
         else:
             st.dataframe(df_found, use_container_width=True)
-
