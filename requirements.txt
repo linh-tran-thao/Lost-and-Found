@@ -2,11 +2,10 @@ streamlit
 pandas
 openpyxl
 Pillow
-
 google-generativeai
-openai
-
 langchain==0.3.7
 langchain-community==0.3.7
 chromadb==0.5.3
 tiktoken
+langchain-openai
+openai
