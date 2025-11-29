@@ -977,3 +977,4 @@ if page.startswith("📦"):
             st.markdown("### Found items (table view)")
             st.dataframe(df_found, use_container_width=True)
 
+
