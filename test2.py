@@ -20,130 +20,63 @@ from langchain_community.vectorstores import Chroma
 
 
 # -----------------------
-# BASIC CONFIG
+# BASIC CONFIG / THEME
 # -----------------------
 
 MODEL_NAME = "gemini-2.0-flash"
 
 st.set_page_config(
-    page_title="Lost & Found AI",
+    page_title="Lost & Found Intake",
     page_icon="🧳",
     layout="wide",
 )
 
-# -----------------------
-# GLOBAL STYLES / HERO
-# -----------------------
-
+# Simple custom CSS for nicer cards / headers
 st.markdown(
     """
-<style>
-:root {
-  --accent: #6366F1;         /* indigo */
-  --accent-soft: #EEF2FF;
-  --accent-soft-border: #E0E7FF;
-}
-
-/* main background */
-.main {
-    background-color: #F3F4F6;
-}
-
-/* cards for matches / panels */
-.card {
-    border-radius: 18px;
-    padding: 0.9rem 1.1rem;
-    border: 1px solid #E5E7EB;
-    background-color: #FFFFFF;
-    margin-bottom: 0.75rem;
-    box-shadow: 0 8px 18px rgba(15,23,42,0.04);
-}
-
-/* card title */
-.card-title {
-    font-weight: 600;
-    font-size: 0.98rem;
-    margin-bottom: 0.25rem;
-}
-
-/* subtle text */
-.card-subtle {
-    font-size: 0.8rem;
-    color: #6B7280;
-}
-
-/* badges for tags */
-.badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    padding: 0.15rem 0.6rem;
-    border-radius: 999px;
-    background-color: var(--accent-soft);
-    border: 1px solid var(--accent-soft-border);
-    font-size: 0.72rem;
-    color: var(--accent);
-    margin-right: 0.25rem;
-    margin-top: 0.15rem;
-}
-
-/* section titles */
-.section-title {
-    font-size: 1.05rem;
-    font-weight: 600;
-    margin-bottom: 0.35rem;
-}
-
-/* chat messages */
-[data-testid="stChatMessageContent"] {
-    font-size: 0.9rem;
-}
-
-/* primary buttons */
-.stButton>button {
-    border-radius: 999px;
-    background: linear-gradient(135deg,#6366F1,#A855F7);
-    color: white;
-    border: none;
-    padding: 0.45rem 1.1rem;
-    font-weight: 500;
-}
-.stButton>button:hover {
-    filter: brightness(1.03);
-}
-
-/* sliders */
-.stSlider > div[data-baseweb="slider"] > div > div {
-    background-color: var(--accent-soft-border);
-}
-.stSlider [role="slider"] {
-    background-color: var(--accent);
-}
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-# Hero header
-st.markdown(
-    """
-<div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.2rem;">
-  <div style="
-      width:40px;height:40px;border-radius:999px;
-      background:linear-gradient(135deg,#6366F1,#A855F7);
-      display:flex;align-items:center;justify-content:center;
-      color:white;font-size:1.4rem;">
-    🧳
-  </div>
-  <div>
-    <div style="font-size:1.4rem;font-weight:700;">Lost &amp; Found AI</div>
-    <div style="font-size:0.85rem;color:#6B7280;">
-      Photo caption → Chat intake → Tag standardization → Vector matching
-    </div>
-  </div>
-</div>
-<hr style="margin-top:0.6rem;margin-bottom:0.4rem;border:none;border-top:1px solid #E5E7EB;">
-""",
+    <style>
+    .main-title {
+        font-size: 2rem;
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+    }
+    .subtitle {
+        font-size: 0.95rem;
+        color: #555555;
+        margin-bottom: 0.8rem;
+    }
+    .card {
+        border-radius: 12px;
+        padding: 1rem 1.2rem;
+        border: 1px solid #E3E3E3;
+        background-color: #FAFAFA;
+        margin-bottom: 0.8rem;
+    }
+    .metric-card {
+        border-radius: 12px;
+        padding: 0.8rem 1rem;
+        border: 1px solid #E3E3E3;
+        background-color: #FFFFFF;
+        text-align: center;
+    }
+    .metric-card h3 {
+        margin: 0;
+        font-size: 0.9rem;
+        color: #777777;
+    }
+    .metric-card p {
+        margin: 0;
+        font-size: 1.4rem;
+        font-weight: 700;
+    }
+    .section-title {
+        font-size: 1.2rem;
+        font-weight: 600;
+        margin-top: 1.2rem;
+        margin-bottom: 0.4rem;
+    }
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -186,17 +119,28 @@ gemini_client = get_gemini_client()
 
 
 @st.cache_resource
+def get_embeddings():
+    if not secrets["openai_key"]:
+        st.warning("OPENAI_API_KEY is not set; semantic matching will be disabled.")
+        return None
+    try:
+        return OpenAIEmbeddings(openai_api_key=secrets["openai_key"])
+    except Exception as e:
+        st.error(f"Error creating OpenAI embeddings: {e}")
+        return None
+
+
+@st.cache_resource
 def get_vector_store():
     """
     Create or load a Chroma vector DB using OpenAI embeddings.
     This stores all *found* items with metadata.
     """
-    if not secrets["openai_key"]:
-        st.warning("OPENAI_API_KEY is not set; semantic matching will be disabled.")
+    embeddings = get_embeddings()
+    if embeddings is None:
         return None
 
     try:
-        embeddings = OpenAIEmbeddings(openai_api_key=secrets["openai_key"])
         vs = Chroma(
             collection_name="lost_and_found_items",
             embedding_function=embeddings,
@@ -449,10 +393,56 @@ def validate_email(email: str) -> bool:
 # VECTOR STORE HELPERS
 # -----------------------
 
+def get_all_found_items_raw() -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
+    """Return raw ids, documents, metadatas from Chroma."""
+    if vector_store is None:
+        return [], [], []
+    try:
+        coll = vector_store._collection
+        data = coll.get()
+        return data.get("ids", []), data.get("documents", []), data.get("metadatas", [])
+    except Exception:
+        return [], [], []
+
+
+def get_all_found_items_as_df() -> pd.DataFrame:
+    """Pull all 'found' items from Chroma for admin view & metrics."""
+    ids, docs, metas = get_all_found_items_raw()
+    rows: List[Dict[str, Any]] = []
+
+    for id_, doc, meta in zip(ids, docs, metas):
+        if not meta:
+            continue
+        if meta.get("record_type") != "found":
+            continue
+
+        rows.append(
+            {
+                "found_id": meta.get("found_id", id_),
+                "description": meta.get("description", doc),
+                "subway_location": ", ".join(meta.get("subway_location", [])),
+                "color": ", ".join(meta.get("color", [])),
+                "item_category": meta.get("item_category", ""),
+                "item_type": ", ".join(meta.get("item_type", [])),
+                "contact": meta.get("contact", ""),
+                "time": meta.get("time", ""),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
 def get_next_found_id() -> int:
     """Generate a simple incremental ID for found items (for display/admin)."""
     if "next_found_id" not in st.session_state:
-        st.session_state.next_found_id = 1
+        # Derive from existing items so IDs don't reset
+        df = get_all_found_items_as_df()
+        if df.empty:
+            st.session_state.next_found_id = 1
+        else:
+            st.session_state.next_found_id = int(df["found_id"].max()) + 1
     nid = st.session_state.next_found_id
     st.session_state.next_found_id += 1
     return nid
@@ -501,11 +491,10 @@ def save_found_item_to_vectorstore(json_data: Dict, contact: str) -> int:
 
 def search_matches_for_lost_item(
     final_json: Dict, top_k: int, max_distance: float
-) -> Tuple[List, List]:
+) -> Tuple[List[Any], List[Any]]:
     """
     Use vector DB (Chroma) to search for similar found items.
-    Assumes similarity_search_with_score returns a distance/score (float).
-    We treat lower scores as "closer" and hide those above max_distance.
+    Returns (all_candidates, filtered_by_distance)
     """
     if vector_store is None:
         return [], []
@@ -530,52 +519,7 @@ def search_matches_for_lost_item(
         docs_scores = []
 
     filtered = [(doc, score) for doc, score in docs_scores if score <= max_distance]
-
     return docs_scores, filtered
-
-
-def get_all_found_items_as_df() -> pd.DataFrame:
-    """
-    Pull all "found" items from Chroma for admin view.
-    """
-    if vector_store is None:
-        return pd.DataFrame()
-
-    try:
-        coll = vector_store._collection  # underlying chroma collection
-        data = coll.get()  # ids, documents, metadatas
-    except Exception as e:
-        st.error(f"Error reading from vector store: {e}")
-        return pd.DataFrame()
-
-    rows: List[Dict[str, Any]] = []
-    ids = data.get("ids", [])
-    docs = data.get("documents", [])
-    metas = data.get("metadatas", [])
-
-    for id_, doc, meta in zip(ids, docs, metas):
-        if not meta:
-            continue
-        if meta.get("record_type") != "found":
-            continue
-
-        rows.append(
-            {
-                "found_id": meta.get("found_id", id_),
-                "description": meta.get("description", doc),
-                "subway_location": ", ".join(meta.get("subway_location", [])),
-                "color": ", ".join(meta.get("color", [])),
-                "item_category": meta.get("item_category", ""),
-                "item_type": ", ".join(meta.get("item_type", [])),
-                "contact": meta.get("contact", ""),
-                "time": meta.get("time", ""),
-            }
-        )
-
-    if not rows:
-        return pd.DataFrame()
-
-    return pd.DataFrame(rows)
 
 
 # -----------------------
@@ -589,68 +533,76 @@ if not tag_data:
 if gemini_client is None:
     st.stop()
 
-# Sidebar navigation + matching controls
-st.sidebar.title("Navigation")
+# -----------------------
+# SIDEBAR NAV + MATCHING CONTROLS
+# -----------------------
+
+st.sidebar.title("🧭 Navigation")
 
 page = st.sidebar.radio(
-    "",
-    [
-        "🧍 Report Lost Item (User)",
-        "🧑‍💼 Upload Found Item (Staff)",
-        "📦 Admin: Inventory",
-    ],
+    "Go to",
+    ["👮 Operator: Upload Found Item", "🧍 User: Report Lost Item", "📊 Admin: View Found Items"],
 )
 
-# Defaults for matching options (user page)
-if "top_k" not in st.session_state:
-    st.session_state.top_k = 5
-if "max_distance" not in st.session_state:
-    st.session_state.max_distance = 0.4
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔎 Matching Controls")
 
-if page.startswith("🧍"):
-    st.sidebar.markdown("### 🔍 Matching controls")
+top_k_sidebar = st.sidebar.slider(
+    "Top-K candidates",
+    min_value=1,
+    max_value=10,
+    value=5,
+    step=1,
+    help="Number of candidate matches to retrieve from the vector DB.",
+)
 
-    st.session_state.top_k = st.sidebar.slider(
-        "Number of candidate matches (top-K)",
-        min_value=1,
-        max_value=10,
-        value=st.session_state.top_k,
-        step=1,
+max_distance_sidebar = st.sidebar.slider(
+    "Max distance (lower = more similar)",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.4,
+    step=0.01,
+    help="Matches with distance greater than this will be filtered out.",
+)
+
+st.sidebar.markdown("---")
+st.sidebar.caption("💡 Tip: Distance is model-dependent. Start with 0.4–0.5 and adjust.")
+
+
+# -----------------------
+# TOP DASHBOARD METRICS
+# -----------------------
+
+df_found_for_metrics = get_all_found_items_as_df()
+total_found = len(df_found_for_metrics)
+
+col_m1, col_m2 = st.columns(2)
+with col_m1:
+    st.markdown('<div class="metric-card"><h3>Total Found Items</h3><p>{}</p></div>'.format(total_found), unsafe_allow_html=True)
+with col_m2:
+    st.markdown(
+        '<div class="metric-card"><h3>Matching Top-K</h3><p>{}</p></div>'.format(top_k_sidebar),
+        unsafe_allow_html=True,
     )
-    st.session_state.max_distance = st.sidebar.slider(
-        "Distance threshold (lower = more similar)",
-        min_value=0.0,
-        max_value=1.0,
-        value=st.session_state.max_distance,
-        step=0.01,
-    )
 
-    st.sidebar.markdown(
-        f"Current threshold will hide matches with distance > `{st.session_state.max_distance:.2f}`."
-    )
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown(
-        """
-**How it works**
-
-1. Describe your item in chat  
-2. We standardize tags (color, category, etc.)  
-3. We retrieve **top-K vector matches** and filter by distance.
-"""
-    )
+st.markdown("")  # spacing
 
 
 # ===============================================================
-# STAFF SIDE – UPLOAD FOUND ITEM
+# PAGE 1: OPERATOR – UPLOAD FOUND ITEM
 # ===============================================================
 
-if page.startswith("🧑‍💼"):
-    st.title("🧑‍💼 Staff: Upload Found Item")
+if page.startswith("👮"):
+    st.markdown('<div class="main-title">👮 Operator View: Upload Found Item</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="subtitle">Frontline staff can quickly record what they found, '
+        'then the system standardizes tags and stores it in the vector database for matching later.</div>',
+        unsafe_allow_html=True,
+    )
 
     if "operator_chat" not in st.session_state:
         st.session_state.operator_chat = gemini_client.chats.create(
-            model=MODEL_NAME,
+            model= MODEL_NAME,
             config=types.GenerateContentConfig(
                 system_instruction=GENERATOR_SYSTEM_PROMPT,
             ),
@@ -658,35 +610,38 @@ if page.startswith("🧑‍💼"):
         st.session_state.operator_msgs = []
 
     # Show conversation history
+    if st.session_state.operator_msgs:
+        st.markdown('<div class="section-title">🗨️ Intake Conversation</div>', unsafe_allow_html=True)
     for msg in st.session_state.operator_msgs:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
     # Initial intake
     if not st.session_state.operator_msgs:
-        st.markdown('<div class="section-title">Step 1 · Start Intake</div>', unsafe_allow_html=True)
-        col1, col2 = st.columns(2)
-        with col1:
-            uploaded_image = st.file_uploader(
-                "Image of the found item (optional)",
-                type=["jpg", "jpeg", "png"],
-                key="operator_image",
-            )
-        with col2:
-            initial_text = st.text_input(
-                "Short description",
-                placeholder="For example: black backpack with a NASA patch",
-                key="operator_text",
-            )
+        st.markdown('<div class="section-title">➕ Start a New Found Item</div>', unsafe_allow_html=True)
+        with st.container():
+            col1, col2 = st.columns(2)
+            with col1:
+                uploaded_image = st.file_uploader(
+                    "📷 Image of the found item (optional)",
+                    type=["jpg", "jpeg", "png"],
+                    key="operator_image",
+                )
+            with col2:
+                initial_text = st.text_input(
+                    "📝 Short description",
+                    placeholder="For example: black backpack with a NASA patch",
+                    key="operator_text",
+                )
 
-        if st.button("Start Intake"):
+        if st.button("🚀 Start Intake"):
             if not uploaded_image and not initial_text:
                 st.error("Please upload an image or enter a short description.")
             else:
                 message_content = ""
                 if uploaded_image:
                     img = Image.open(uploaded_image).convert("RGB")
-                    st.image(img, width=200)
+                    st.image(img, width=220, caption="Preview of found item")
                     message_content += "I have uploaded an image of the found item. "
                 if initial_text:
                     message_content += initial_text
@@ -694,7 +649,7 @@ if page.startswith("🧑‍💼"):
                 st.session_state.operator_msgs.append(
                     {"role": "user", "content": message_content}
                 )
-                with st.spinner("Analyzing item..."):
+                with st.spinner("Analyzing item with Gemini..."):
                     response = safe_send(
                         st.session_state.operator_chat,
                         message_content,
@@ -706,12 +661,12 @@ if page.startswith("🧑‍💼"):
                 st.rerun()
 
     # Continue chat
-    operator_input = st.chat_input("Add more details or say 'done' when ready")
+    operator_input = st.chat_input("Add more details for the operator bot, or say 'done' when ready.")
     if operator_input:
         st.session_state.operator_msgs.append(
             {"role": "user", "content": operator_input}
         )
-        with st.spinner("Processing..."):
+        with st.spinner("Processing operator message..."):
             response = safe_send(
                 st.session_state.operator_chat,
                 operator_input,
@@ -727,56 +682,52 @@ if page.startswith("🧑‍💼"):
         st.session_state.operator_msgs[-1]["content"]
     ):
         structured_text = st.session_state.operator_msgs[-1]["content"]
-        st.markdown('<div class="section-title">Step 2 · Structured record</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">📦 Final Structured Description</div>', unsafe_allow_html=True)
         st.code(structured_text)
 
         final_json = standardize_description(structured_text, tag_data)
         if final_json:
-            st.markdown('<div class="section-title">Step 3 · Standardized tags</div>', unsafe_allow_html=True)
-            with st.expander("View standardized JSON", expanded=False):
-                st.json(final_json)
+            st.markdown('<div class="section-title">🏷️ Standardized Tags (JSON)</div>', unsafe_allow_html=True)
+            st.json(final_json)
 
-            contact = st.text_input("Staff contact / badge ID (for internal use)")
+            st.markdown('<div class="section-title">👤 Operator Contact</div>', unsafe_allow_html=True)
+            contact = st.text_input("Operator contact or badge ID")
 
-            if st.button("Save Found Item to Vector DB"):
+            if st.button("💾 Save Found Item to Vector DB"):
                 found_id = save_found_item_to_vectorstore(final_json, contact)
                 if found_id > 0:
-                    st.success(f"Found item saved with ID `{found_id}` in Chroma.")
+                    st.success(f"Found item saved with ID `{found_id}` (Chroma vector DB).")
 
 
 # ===============================================================
-# USER SIDE – REPORT LOST ITEM
+# PAGE 2: USER – REPORT LOST ITEM & MATCH
 # ===============================================================
 
 if page.startswith("🧍"):
-    st.title("🧍 Rider: Report Lost Item")
-
+    st.markdown('<div class="main-title">🧍 User View: Report Lost Item</div>', unsafe_allow_html=True)
     st.markdown(
-        """
-<div class="section-title">Quick tags (optional)</div>
-<span style="font-size:0.85rem;color:#6B7280;">
-Use these dropdowns if you already know the station / category / type. We will still refine via chat.
-</span>
-""",
+        '<div class="subtitle">Riders describe what they lost. The system standardizes their description '
+        'and searches for similar found items using embeddings.</div>',
         unsafe_allow_html=True,
     )
 
-    with st.expander("Quick tag selection", expanded=False):
+    st.markdown('<div class="section-title">⚡ Optional Quick Info</div>', unsafe_allow_html=True)
+    with st.expander("Click to pre-select station / category / type"):
         col1, col2, col3 = st.columns(3)
         with col1:
             location_choice = st.selectbox(
-                "Subway station (optional)", [""] + tag_data["locations"]
+                "🚉 Subway station (optional)", [""] + tag_data["locations"]
             )
         with col2:
             category_choice = st.selectbox(
-                "Item category (optional)", [""] + tag_data["categories"]
+                "📂 Item category (optional)", [""] + tag_data["categories"]
             )
         with col3:
             type_choice = st.selectbox(
-                "Item type (optional)", [""] + tag_data["item_types"]
+                "🔖 Item type (optional)", [""] + tag_data["item_types"]
             )
 
-    st.markdown('<div class="section-title" style="margin-top:0.5rem;">Describe or show your lost item</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📷 / 📝 Describe Your Lost Item</div>', unsafe_allow_html=True)
     col_img, col_text = st.columns(2)
     with col_img:
         uploaded_image = st.file_uploader(
@@ -801,19 +752,21 @@ Use these dropdowns if you already know the station / category / type. We will s
         st.session_state.user_msgs = []
 
     # Show chat history
+    if st.session_state.user_msgs:
+        st.markdown('<div class="section-title">🗨️ Chat with the Lost-Item Assistant</div>', unsafe_allow_html=True)
     for msg in st.session_state.user_msgs:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
     # Start report
-    if not st.session_state.user_msgs and st.button("Start Report"):
+    if not st.session_state.user_msgs and st.button("🚀 Start Lost Item Report"):
         if not uploaded_image and not initial_text:
             st.error("Please upload an image or enter a short description.")
         else:
             message_text = ""
             if uploaded_image:
                 image = Image.open(uploaded_image).convert("RGB")
-                st.image(image, width=250)
+                st.image(image, width=240, caption="Your lost item (preview)")
                 message_text += "I have uploaded an image of my lost item. "
             if initial_text:
                 message_text += initial_text
@@ -833,7 +786,7 @@ Use these dropdowns if you already know the station / category / type. We will s
             st.rerun()
 
     # Continue chat
-    user_input = st.chat_input("Add more details or say 'done' when ready")
+    user_input = st.chat_input("Add more details, answer questions, or say 'done' when ready.")
     if user_input:
         st.session_state.user_msgs.append(
             {"role": "user", "content": user_input}
@@ -855,6 +808,7 @@ Use these dropdowns if you already know the station / category / type. We will s
     ):
         structured_text = st.session_state.user_msgs[-1]["content"]
 
+        st.markdown('<div class="section-title">🧩 Final Structured Record (Before Standardization)</div>', unsafe_allow_html=True)
         merged_text = f"""
 Subway Location: {location_choice or extract_field(structured_text, 'Subway Location')}
 Color: {extract_field(structured_text, 'Color')}
@@ -862,30 +816,26 @@ Item Category: {category_choice or extract_field(structured_text, 'Item Category
 Item Type: {type_choice or extract_field(structured_text, 'Item Type')}
 Description: {extract_field(structured_text, 'Description')}
         """
-
-        st.markdown('<div class="section-title">Step 2 · Merged record before standardization</div>', unsafe_allow_html=True)
         st.code(merged_text)
 
         final_json = standardize_description(merged_text, tag_data)
         if final_json:
-            st.markdown('<div class="section-title">Step 3 · Standardized record</div>', unsafe_allow_html=True)
-            with st.expander("View standardized JSON", expanded=False):
-                st.json(final_json)
+            st.markdown('<div class="section-title">🏷️ Standardized Lost Item</div>', unsafe_allow_html=True)
+            st.json(final_json)
 
-            st.markdown('<div class="section-title">Contact information</div>', unsafe_allow_html=True)
-            contact = st.text_input("Phone number (10 digits)")
+            st.markdown('<div class="section-title">📇 Contact Information</div>', unsafe_allow_html=True)
+            contact = st.text_input("Phone number (10 digits, numbers only)")
             email = st.text_input("Email address")
 
-            top_k = st.session_state.top_k
-            max_distance = st.session_state.max_distance
+            st.info("Your contact is only used to follow up if a strong match is found.")
 
-            if st.button("Submit Lost Item & Find Matches"):
+            if st.button("🔍 Submit & Search for Matches"):
                 if not validate_phone(contact):
                     st.error("Please enter a ten digit phone number (no spaces).")
                 elif not validate_email(email):
                     st.error("Please enter a valid email address.")
                 else:
-                    st.success("Lost item report submitted (not stored in DB).")
+                    st.success("Lost item report received (not stored permanently in DB for this demo).")
 
                     if vector_store is None:
                         st.info(
@@ -896,7 +846,9 @@ Description: {extract_field(structured_text, 'Description')}
                             "Searching for similar found items using embeddings..."
                         ):
                             all_candidates, filtered = search_matches_for_lost_item(
-                                final_json, top_k=top_k, max_distance=max_distance
+                                final_json,
+                                top_k=top_k_sidebar,
+                                max_distance=max_distance_sidebar,
                             )
 
                         if not all_candidates:
@@ -904,7 +856,7 @@ Description: {extract_field(structured_text, 'Description')}
                                 "No items are stored in the vector DB yet, so no matches can be returned."
                             )
                         else:
-                            st.markdown('<div class="section-title">Step 4 · Candidate matches</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="section-title">📌 Candidate Matches</div>', unsafe_allow_html=True)
 
                             if not filtered:
                                 st.info(
@@ -915,58 +867,44 @@ Description: {extract_field(structured_text, 'Description')}
                             else:
                                 to_show = filtered
 
-                            shown_any = False
                             for doc, score in to_show:
                                 meta = doc.metadata or {}
-                                # interpret score as distance; lower = more similar
                                 similarity_pct = max(0.0, (1.0 - score) * 100.0)
 
-                                loc = ", ".join(meta.get("subway_location", []))
-                                color = ", ".join(meta.get("color", []))
-                                cat = meta.get("item_category", "")
-                                types = ", ".join(meta.get("item_type", []))
-                                desc = meta.get("description", doc.page_content)
-
-                                badges = []
-                                if loc:
-                                    badges.append(f'<span class="badge">📍 {loc}</span>')
-                                if color:
-                                    badges.append(f'<span class="badge">🎨 {color}</span>')
-                                if cat:
-                                    badges.append(f'<span class="badge">📂 {cat}</span>')
-                                if types:
-                                    badges.append(f'<span class="badge">🧾 {types}</span>')
-
-                                title = f"Possible match (ID: {meta.get('found_id', 'N/A')})"
-
                                 st.markdown(
-                                    f"""
-<div class="card">
-  <div class="card-title">{title}</div>
-  <div class="card-subtle">
-    Distance: <code>{score:.4f}</code> ·
-    Approx. similarity: <b>{similarity_pct:.1f}%</b>
-  </div>
-  <div style="margin-top:0.45rem;">{desc}</div>
-  <div style="margin-top:0.45rem;">{" ".join(badges)}</div>
-</div>
-""",
-                                    unsafe_allow_html=True,
+                                    f"**Distance:** `{score:.4f}`  ·  "
+                                    f"**Similarity (approx):** `{similarity_pct:.1f}%`"
                                 )
-                                shown_any = True
 
-                            if not shown_any:
-                                st.write(
-                                    "⚠️ No matches above the current threshold — try lowering it in the sidebar to see more candidates."
-                                )
+                                st.write("**Description:**", meta.get("description", doc.page_content))
+
+                                if meta.get("subway_location"):
+                                    st.write(
+                                        "🚉 Location:", ", ".join(meta["subway_location"])
+                                    )
+                                if meta.get("color"):
+                                    st.write("🎨 Color:", ", ".join(meta["color"]))
+                                if meta.get("item_category"):
+                                    st.write("📂 Category:", meta["item_category"])
+                                if meta.get("item_type"):
+                                    st.write("🔖 Type:", ", ".join(meta["item_type"]))
+
+                                st.caption(f"Found item ID: {meta.get('found_id', 'N/A')} · Time: {meta.get('time', '')}")
+                                with st.expander("View raw metadata"):
+                                    st.json(meta)
+                                st.markdown("---")
 
 
 # ===============================================================
-# ADMIN – VIEW FOUND ITEMS
+# PAGE 3: ADMIN – VIEW FOUND ITEMS
 # ===============================================================
 
-if page.startswith("📦"):
-    st.title("📦 Admin: View Stored Found Items")
+if page.startswith("📊"):
+    st.markdown('<div class="main-title">📊 Admin: View Stored Found Items</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="subtitle">Quick view of everything operators have logged into the vector DB.</div>',
+        unsafe_allow_html=True,
+    )
 
     if vector_store is None:
         st.error("Vector store is not available.")
@@ -975,6 +913,7 @@ if page.startswith("📦"):
         if df_found.empty:
             st.info("No found items stored yet.")
         else:
+            st.markdown('<div class="section-title">📦 Found Items Table</div>', unsafe_allow_html=True)
             st.dataframe(df_found, use_container_width=True)
-
+            st.caption("Scroll horizontally to see all columns.")
 
