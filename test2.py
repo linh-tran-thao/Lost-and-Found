@@ -496,17 +496,28 @@ def save_found_item_to_vectorstore(json_data: Dict, contact: str) -> int:
 
     found_id = get_next_found_id()
 
-    metadata = {
+    # --- CLEANER: convert None → "null", lists with None → cleaned lists ---
+    def clean_value(v):
+        if v is None:
+            return "null"
+        if isinstance(v, list):
+            return [x if x is not None else "null" for x in v]
+        return v
+
+    raw_metadata = {
         "record_type": "found",
         "found_id": found_id,
         "subway_location": json_data.get("subway_location", []),
         "color": json_data.get("color", []),
-        "item_category": json_data.get("item_category", ""),
+        "item_category": json_data.get("item_category", "null"),
         "item_type": json_data.get("item_type", []),
         "description": description,
-        "contact": contact,
-        "time": json_data.get("time"),
+        "contact": contact or "null",
+        "time": json_data.get("time", "null"),
     }
+
+    # Apply cleaning
+    metadata = {k: clean_value(v) for k, v in raw_metadata.items()}
 
     try:
         vector_store.add_texts(
@@ -516,6 +527,7 @@ def save_found_item_to_vectorstore(json_data: Dict, contact: str) -> int:
         )
         vector_store.persist()
         return found_id
+
     except Exception as e:
         st.error(f"Error saving found item to vector store: {e}")
         return -1
