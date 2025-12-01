@@ -154,6 +154,18 @@ def get_vector_store():
 
 vector_store = get_vector_store()
 
+def refresh_vector_store():
+    """Reload the Chroma collection to ensure new items appear."""
+    try:
+        return Chroma(
+            collection_name="lost_and_found_items",
+            embedding_function=get_embeddings(),
+            persist_directory="chroma_db"
+        )
+    except Exception as e:
+        st.error(f"Error refreshing Chroma store: {e}")
+        return None
+
 
 # -----------------------
 # SAFE GEMINI HELPERS
@@ -592,7 +604,7 @@ st.sidebar.caption("💡 Tip: Distance is model-dependent. Start with 0.4–0.5 
 # -----------------------
 # TOP DASHBOARD METRICS
 # -----------------------
-
+vector_store = refresh_vector_store()
 df_found_for_metrics = get_all_found_items_as_df()
 total_found = len(df_found_for_metrics)
 
@@ -918,7 +930,6 @@ Description: {extract_field(structured_text, 'Description')}
 # ===============================================================
 # PAGE 3: ADMIN – VIEW FOUND ITEMS
 # ===============================================================
-
 if page.startswith("📊"):
     st.markdown('<div class="main-title">📊 Admin: View Stored Found Items</div>', unsafe_allow_html=True)
     st.markdown(
@@ -926,14 +937,19 @@ if page.startswith("📊"):
         unsafe_allow_html=True,
     )
 
+    # 🔥 Force refresh of vector store each time
+    vector_store = refresh_vector_store()
+
     if vector_store is None:
         st.error("Vector store is not available.")
     else:
         df_found = get_all_found_items_as_df()
+
         if df_found.empty:
             st.info("No found items stored yet.")
         else:
             st.markdown('<div class="section-title">📦 Found Items Table</div>', unsafe_allow_html=True)
             st.dataframe(df_found, use_container_width=True)
             st.caption("Scroll horizontally to see all columns.")
+
 
