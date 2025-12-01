@@ -671,12 +671,16 @@ if page.startswith("👮"):
                 st.error("Please upload an image or enter a short description.")
             else:
                 message_content = ""
+                # Send the image as a separate message
                 if uploaded_image:
                     img = Image.open(uploaded_image).convert("RGB")
                     st.image(img, width=220, caption="Preview of found item")
-                    message_content += "I have uploaded an image of the found item. "
+                    st.session_state.operator_chat.send_message(Image.open(uploaded_image))
+
+                # Send user text as a separate message
                 if initial_text:
-                    message_content += initial_text
+                    st.session_state.operator_chat.send_message(initial_text)
+                
 
                 st.session_state.operator_msgs.append(
                     {"role": "user", "content": message_content}
