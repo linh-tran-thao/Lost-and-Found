@@ -497,12 +497,18 @@ def save_found_item_to_vectorstore(json_data: Dict, contact: str) -> int:
     found_id = get_next_found_id()
 
     # --- CLEANER: convert None → "null", lists with None → cleaned lists ---
-    def clean_value(v):
-        if v is None:
-            return "null"
-        if isinstance(v, list):
-            return [x if x is not None else "null" for x in v]
-        return v
+def clean_value(v):
+    # Chroma metadata must be str / int / float / bool
+    if v is None:
+        return "null"
+    # Convert list values to a comma-separated string
+    if isinstance(v, list):
+        # filter out any None inside the list
+        return ", ".join(str(x) for x in v if x is not None)
+    # Optionally handle dict/tuple/set just in case
+    if isinstance(v, (dict, tuple, set)):
+        return json.dumps(list(v), default=str)
+    return v
 
     raw_metadata = {
         "record_type": "found",
