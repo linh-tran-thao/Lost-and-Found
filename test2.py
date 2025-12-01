@@ -872,7 +872,8 @@ Description: {extract_field(structured_text, 'Description')}
                     st.error("Please enter a valid email address.")
                 else:
                     st.success("Lost item report received (not stored permanently in DB for this demo).")
-
+                      # 🔥 REFRESH VECTOR STORE so new found items load
+                    vector_store = refresh_vector_store()
                     if vector_store is None:
                         st.info(
                             "Vector store is not configured, so no matches can be shown yet."
