@@ -512,16 +512,19 @@ def search_matches_for_lost_item(
     if not query_text:
         return [], []
 
-    # Optional filter by category (string)
-    filter_dict: Dict[str, Any] = {"record_type": "found"}
-    if final_json.get("item_category") and final_json["item_category"] != "null":
-        filter_dict["item_category"] = final_json["item_category"]
+    # Build Chroma filter with a single top-level operator
+    where_filter: Dict[str, Any] = {"$and": [{"record_type": "found"}]}
+
+    item_cat = final_json.get("item_category")
+    if item_cat and item_cat != "null":
+        # your metadata stores item_category as a single string
+        where_filter["$and"].append({"item_category": item_cat})
 
     try:
         docs_scores = vector_store.similarity_search_with_score(
             query_text,
             k=top_k,
-            filter=filter_dict,
+            filter=where_filter,  # <- use where_filter instead of filter_dict
         )
     except Exception as e:
         st.error(f"Error during vector search: {e}")
