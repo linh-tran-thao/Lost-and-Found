@@ -420,10 +420,11 @@ def get_all_found_items_as_df() -> pd.DataFrame:
             {
                 "found_id": meta.get("found_id", id_),
                 "description": meta.get("description", doc),
-                "subway_location": ", ".join(meta.get("subway_location", [])),
-                "color": ", ".join(meta.get("color", [])),
+                # stored as strings now
+                "subway_location": meta.get("subway_location", ""),
+                "color": meta.get("color", ""),
                 "item_category": meta.get("item_category", ""),
-                "item_type": ", ".join(meta.get("item_type", [])),
+                "item_type": meta.get("item_type", ""),
                 "contact": meta.get("contact", ""),
                 "time": meta.get("time", ""),
             }
@@ -437,15 +438,23 @@ def get_all_found_items_as_df() -> pd.DataFrame:
 def get_next_found_id() -> int:
     """Generate a simple incremental ID for found items (for display/admin)."""
     if "next_found_id" not in st.session_state:
-        # Derive from existing items so IDs don't reset
         df = get_all_found_items_as_df()
         if df.empty:
-            st.session_state.next_found_id = 1
+            st.session_state["next_found_id"] = 1
         else:
-            st.session_state.next_found_id = int(df["found_id"].max()) + 1
-    nid = st.session_state.next_found_id
-    st.session_state.next_found_id += 1
+            st.session_state["next_found_id"] = int(df["found_id"].max()) + 1
+    nid = st.session_state["next_found_id"]
+    st.session_state["next_found_id"] += 1
     return nid
+
+
+def _to_meta_str(value) -> str:
+    """Ensure Chroma metadata value is a simple string."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value)
+    return str(value)
 
 
 def save_found_item_to_vectorstore(json_data: Dict, contact: str) -> int:
@@ -466,14 +475,14 @@ def save_found_item_to_vectorstore(json_data: Dict, contact: str) -> int:
 
     metadata = {
         "record_type": "found",
-        "found_id": found_id,
-        "subway_location": json_data.get("subway_location", []),
-        "color": json_data.get("color", []),
-        "item_category": json_data.get("item_category", ""),
-        "item_type": json_data.get("item_type", []),
-        "description": description,
-        "contact": contact,
-        "time": json_data.get("time"),
+        "found_id": int(found_id),
+        "subway_location": _to_meta_str(json_data.get("subway_location", [])),
+        "color": _to_meta_str(json_data.get("color", [])),
+        "item_category": _to_meta_str(json_data.get("item_category", "")),
+        "item_type": _to_meta_str(json_data.get("item_type", [])),
+        "description": _to_meta_str(description),
+        "contact": _to_meta_str(contact),
+        "time": _to_meta_str(json_data.get("time")),
     }
 
     try:
@@ -503,7 +512,7 @@ def search_matches_for_lost_item(
     if not query_text:
         return [], []
 
-    # Optional filter by category
+    # Optional filter by category (string)
     filter_dict: Dict[str, Any] = {"record_type": "found"}
     if final_json.get("item_category") and final_json["item_category"] != "null":
         filter_dict["item_category"] = final_json["item_category"]
@@ -532,6 +541,7 @@ if not tag_data:
 
 if gemini_client is None:
     st.stop()
+
 
 # -----------------------
 # SIDEBAR NAV + MATCHING CONTROLS
@@ -578,7 +588,10 @@ total_found = len(df_found_for_metrics)
 
 col_m1, col_m2 = st.columns(2)
 with col_m1:
-    st.markdown('<div class="metric-card"><h3>Total Found Items</h3><p>{}</p></div>'.format(total_found), unsafe_allow_html=True)
+    st.markdown(
+        '<div class="metric-card"><h3>Total Found Items</h3><p>{}</p></div>'.format(total_found),
+        unsafe_allow_html=True,
+    )
 with col_m2:
     st.markdown(
         '<div class="metric-card"><h3>Matching Top-K</h3><p>{}</p></div>'.format(top_k_sidebar),
@@ -601,23 +614,24 @@ if page.startswith("👮"):
     )
 
     if "operator_chat" not in st.session_state:
-        st.session_state.operator_chat = gemini_client.chats.create(
-            model= MODEL_NAME,
+        st.session_state["operator_chat"] = gemini_client.chats.create(
+            model=MODEL_NAME,
             config=types.GenerateContentConfig(
                 system_instruction=GENERATOR_SYSTEM_PROMPT,
             ),
         )
-        st.session_state.operator_msgs = []
+    if "operator_msgs" not in st.session_state:
+        st.session_state["operator_msgs"] = []
 
     # Show conversation history
-    if st.session_state.operator_msgs:
+    if st.session_state["operator_msgs"]:
         st.markdown('<div class="section-title">🗨️ Intake Conversation</div>', unsafe_allow_html=True)
-    for msg in st.session_state.operator_msgs:
+    for msg in st.session_state["operator_msgs"]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
     # Initial intake
-    if not st.session_state.operator_msgs:
+    if not st.session_state["operator_msgs"]:
         st.markdown('<div class="section-title">➕ Start a New Found Item</div>', unsafe_allow_html=True)
         with st.container():
             col1, col2 = st.columns(2)
@@ -646,16 +660,16 @@ if page.startswith("👮"):
                 if initial_text:
                     message_content += initial_text
 
-                st.session_state.operator_msgs.append(
+                st.session_state["operator_msgs"].append(
                     {"role": "user", "content": message_content}
                 )
                 with st.spinner("Analyzing item with Gemini..."):
                     response = safe_send(
-                        st.session_state.operator_chat,
+                        st.session_state["operator_chat"],
                         message_content,
                         context="operator intake",
                     )
-                st.session_state.operator_msgs.append(
+                st.session_state["operator_msgs"].append(
                     {"role": "model", "content": response.text}
                 )
                 st.rerun()
@@ -663,25 +677,25 @@ if page.startswith("👮"):
     # Continue chat
     operator_input = st.chat_input("Add more details for the operator bot, or say 'done' when ready.")
     if operator_input:
-        st.session_state.operator_msgs.append(
+        st.session_state["operator_msgs"].append(
             {"role": "user", "content": operator_input}
         )
         with st.spinner("Processing operator message..."):
             response = safe_send(
-                st.session_state.operator_chat,
+                st.session_state["operator_chat"],
                 operator_input,
                 context="operator follow-up",
             )
-        st.session_state.operator_msgs.append(
+        st.session_state["operator_msgs"].append(
             {"role": "model", "content": response.text}
         )
         st.rerun()
 
     # When final structured record appears
-    if st.session_state.operator_msgs and is_structured_record(
-        st.session_state.operator_msgs[-1]["content"]
+    if st.session_state["operator_msgs"] and is_structured_record(
+        st.session_state["operator_msgs"][-1]["content"]
     ):
-        structured_text = st.session_state.operator_msgs[-1]["content"]
+        structured_text = st.session_state["operator_msgs"][-1]["content"]
         st.markdown('<div class="section-title">📦 Final Structured Description</div>', unsafe_allow_html=True)
         st.code(structured_text)
 
@@ -743,23 +757,24 @@ if page.startswith("🧍"):
         )
 
     if "user_chat" not in st.session_state:
-        st.session_state.user_chat = gemini_client.chats.create(
+        st.session_state["user_chat"] = gemini_client.chats.create(
             model=MODEL_NAME,
             config=types.GenerateContentConfig(
                 system_instruction=USER_SIDE_GENERATOR_PROMPT,
             ),
         )
-        st.session_state.user_msgs = []
+    if "user_msgs" not in st.session_state:
+        st.session_state["user_msgs"] = []
 
     # Show chat history
-    if st.session_state.user_msgs:
+    if st.session_state["user_msgs"]:
         st.markdown('<div class="section-title">🗨️ Chat with the Lost-Item Assistant</div>', unsafe_allow_html=True)
-    for msg in st.session_state.user_msgs:
+    for msg in st.session_state["user_msgs"]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
     # Start report
-    if not st.session_state.user_msgs and st.button("🚀 Start Lost Item Report"):
+    if not st.session_state["user_msgs"] and st.button("🚀 Start Lost Item Report"):
         if not uploaded_image and not initial_text:
             st.error("Please upload an image or enter a short description.")
         else:
@@ -771,16 +786,16 @@ if page.startswith("🧍"):
             if initial_text:
                 message_text += initial_text
 
-            st.session_state.user_msgs.append(
+            st.session_state["user_msgs"].append(
                 {"role": "user", "content": message_text}
             )
             with st.spinner("Analyzing your description..."):
                 response = safe_send(
-                    st.session_state.user_chat,
+                    st.session_state["user_chat"],
                     message_text,
                     context="user initial report",
                 )
-            st.session_state.user_msgs.append(
+            st.session_state["user_msgs"].append(
                 {"role": "model", "content": response.text}
             )
             st.rerun()
@@ -788,27 +803,30 @@ if page.startswith("🧍"):
     # Continue chat
     user_input = st.chat_input("Add more details, answer questions, or say 'done' when ready.")
     if user_input:
-        st.session_state.user_msgs.append(
+        st.session_state["user_msgs"].append(
             {"role": "user", "content": user_input}
         )
         with st.spinner("Thinking..."):
             response = safe_send(
-                st.session_state.user_chat,
+                st.session_state["user_chat"],
                 user_input,
                 context="user follow-up",
             )
-        st.session_state.user_msgs.append(
+        st.session_state["user_msgs"].append(
             {"role": "model", "content": response.text}
         )
         st.rerun()
 
     # When final structured record appears
-    if st.session_state.user_msgs and is_structured_record(
-        st.session_state.user_msgs[-1]["content"]
+    if st.session_state["user_msgs"] and is_structured_record(
+        st.session_state["user_msgs"][-1]["content"]
     ):
-        structured_text = st.session_state.user_msgs[-1]["content"]
+        structured_text = st.session_state["user_msgs"][-1]["content"]
 
-        st.markdown('<div class="section-title">🧩 Final Structured Record (Before Standardization)</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-title">🧩 Final Structured Record (Before Standardization)</div>',
+            unsafe_allow_html=True,
+        )
         merged_text = f"""
 Subway Location: {location_choice or extract_field(structured_text, 'Subway Location')}
 Color: {extract_field(structured_text, 'Color')}
@@ -879,15 +897,13 @@ Description: {extract_field(structured_text, 'Description')}
                                 st.write("**Description:**", meta.get("description", doc.page_content))
 
                                 if meta.get("subway_location"):
-                                    st.write(
-                                        "🚉 Location:", ", ".join(meta["subway_location"])
-                                    )
+                                    st.write("🚉 Location:", meta["subway_location"])
                                 if meta.get("color"):
-                                    st.write("🎨 Color:", ", ".join(meta["color"]))
+                                    st.write("🎨 Color:", meta["color"])
                                 if meta.get("item_category"):
                                     st.write("📂 Category:", meta["item_category"])
                                 if meta.get("item_type"):
-                                    st.write("🔖 Type:", ", ".join(meta["item_type"]))
+                                    st.write("🔖 Type:", meta["item_type"])
 
                                 st.caption(f"Found item ID: {meta.get('found_id', 'N/A')} · Time: {meta.get('time', '')}")
                                 with st.expander("View raw metadata"):
