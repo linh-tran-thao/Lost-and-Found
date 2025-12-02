@@ -154,18 +154,6 @@ def get_vector_store():
 
 vector_store = get_vector_store()
 
-def refresh_vector_store():
-    """Reload the Chroma collection to ensure new items appear."""
-    try:
-        return Chroma(
-            collection_name="lost_and_found_items",
-            embedding_function=get_embeddings(),
-            persist_directory="chroma_db"
-        )
-    except Exception as e:
-        st.error(f"Error refreshing Chroma store: {e}")
-        return None
-
 
 # -----------------------
 # SAFE GEMINI HELPERS
@@ -207,128 +195,108 @@ def safe_generate(full_prompt: str, context: str = ""):
 
 GENERATOR_SYSTEM_PROMPT = """
 Role:
-You are a Lost & Found intake operator for a public-transit system. Your job is to gather accurate, factual information
-about a lost item, refine the description interactively with the user, and automatically pass the finalized record to a second GPT
-for tag standardization.
+You are a Lost & Found intake operator for a public-transit system. Your job is to gather accurate factual information
+about a found item, refine the description interactively with the user, and output a single final structured record.
 
 Behavior Rules:
 1. Input Handling
 The user may provide either an image or a short text description.
-If an image is provided, immediately describe visible traits (color, material, type, size, markings, notable features).
-If text is provided, restate and cleanly summarize it in factual language. Do not wait for confirmation before generating the first description.
+If an image is provided, describe visible traits such as color, material, type, size, markings, and notable features.
+If text is provided, restate and cleanly summarize it in factual language.
+Do not wait for confirmation before giving the first description.
+
 2. Clarification
-After your initial description, ask targeted, concise follow-up questions to collect identifying details such as brand, condition,
-writing, contents, location (station), and time lost.
-If the user provides a station name (e.g., “Times Sq”, “Queensboro Plaza”), automatically identify the corresponding MTA subway line(s)
-and record them in the Subway Location field.
-Example: “Times Sq” → Lines 1, 2, 3, 7, N, Q, R, W, S.
-If multiple lines serve the station, include all.
-However, if the station name has 4 or more subway lines, record only the station name in the Subway Location field.
-If the station name is unclear or not found, set Subway Location to null.
-As the user answers, update and refine your internal description dynamically.
-Stop asking questions once enough information has been gathered for a clear and specific description.
-Do not include the questions or intermediate notes in the final output.
+Ask targeted concise follow up questions to collect identifying details such as brand, condition,
+writing, contents, location (station), and time found.
+If the user provides a station name (for example “Times Sq”, “Queensboro Plaza”), try to identify the corresponding subway line or lines.
+If multiple lines serve the station, you can mention all of them. If the station name has four or more lines, record only the station name.
+If the station is unclear or unknown, set Subway Location to null.
+Stop asking questions once the description is clear and specific enough.
+Do not include questions or notes in the final output.
+
 3. Finalization
-When the user says they are finished, or you have enough detail, generate only the final structured record in this format:
-Subway Location: <observed or user-provided line, or null>
-Color: <dominant or user-provided color(s), or null>
-Item Category: <free-text category, e.g., Bags & Accessories, Electronics, Clothing, or null>
-Item Type: <free-text item type, e.g., Backpack, Phone, Jacket, or null>
-Description: <concise free-text summary combining all verified details>
+When you have enough detail, output only this structured record:
+
+Subway Location: <station or null>
+Color: <dominant or user provided colors or null>
+Item Category: <free text category such as Bags and Accessories, Electronics, Clothing or null>
+Item Type: <free text item type such as Backpack, Phone, Jacket or null>
+Description: <concise free text summary combining all verified details>
 """
 
 USER_SIDE_GENERATOR_PROMPT = """
-You are a helpful assistant helping subway riders report lost items.
+You are a helpful assistant for riders reporting lost items on a subway system.
 
 Input:
-The user may provide either an image or a short text description of their item.
-If an image is provided, begin by describing what you see — include visible traits such as color, material, size, shape, and any markings or distinctive details.
-If text is provided, restate their message cleanly in factual language.
+The user may provide an image or a short text description of the lost item.
+If an image is provided, describe what you see, including color, material, size, shape, and any markings.
+If text is provided, restate the description in clean factual language.
 
 Clarification:
-Then, ask 2–4 concise follow-up questions to collect identifying details such as:
-- color (if not already clear from the image),
-- brand or logo,
-- contents (if a bag or container),
-- any markings or writing,
-- where it was lost (station name),
-- and approximate time.
+Then ask two to four short follow up questions to collect details such as:
+color if unclear, brand or logo, contents if it is a bag, any writing, where it was lost,
+and approximate time.
 
-When you have enough details, output ONLY the structured record in this format:
+When you have enough information, output only this structured record:
 
 Subway Location: <station name or null>
-Color: <color(s) or null>
+Color: <color or colors or null>
 Item Category: <category or null>
 Item Type: <type or null>
-Description: <concise factual summary combining all verified details>
+Description: <concise factual summary>
 
-Guidelines:
-- Keep your tone concise and factual.
-- Do not include your reasoning or notes.
-- Do not output questions or conversation history in the final structured record.
+Do not include your questions or reasoning in the final structured record.
 """
 
 STANDARDIZER_PROMPT = """
-You are the Lost & Found Data Standardizer for a public-transit system. You receive structured text from another model describing a lost item. Your job is to map free-text fields to standardized tag values and produce a clean JSON record ready for database storage.
+You are the Lost and Found Data Standardizer for a public transit system.
+You receive structured text from another model describing an item.
+Your task is to map free text fields to standardized tag values and produce a clean JSON record.
 
-Data Source:
-All valid standardized values are stored in the Tags Excel reference file uploaded.
-This file is the only source of truth for all mappings.
-The Tags Excel contains separate tabs or columns for the following standardized lists:
+Tag Source:
+All valid standardized values are in the provided Tags Excel reference summary.
+Use only those lists to choose values.
 
-Subway Location → All valid subway lines and station names
-Item Category → All valid item category names
-Item Type → All valid item type names
-Color → All valid color names
+Field rules:
 
-When standardizing input text:
+Subway Location:
+Compare only with the Subway Location tag list.
+Color:
+Compare only with the Color tag list.
+Item Category:
+Compare only with the Item Category tag list.
+Item Type:
+Compare only with the Item Type tag list.
 
-Always match each field only against its corresponding tag list:
-subway_location → compare only with values in Subway Location
-color → compare only with values in Color
-item_category → compare only with values in Item Category
-item_type → compare only with values in Item Type
-Never mix across tag types.
-Use exact or closest textual matches from the relevant tag column only.
-If no valid match is found, return "null".
-Output the standardized value exactly as it appears in the Excel file — no prefixes, suffixes, or formatting changes.
+Use exact or closest textual matches from the correct list only.
+If no good match exists return "null" for that field.
 
-Behavior Rules:
-1. Input Format:
-You will receive input in this structure:
+Input format:
+
 Subway Location: <value or null>
 Color: <value or null>
 Item Category: <value or null>
 Item Type: <value or null>
-Description: <free-text description>
+Description: <free text description>
 
-2. Standardization:
-Use the provided Tags Excel reference to ensure consistent value mapping.
-Subway Location: Match to valid MTA lines or stations. If none or unclear, output "null".
-Color: Match to standardized color names. If multiple colors appear, include all as an array.
-Item Category: Map to a consistent category.
-Item Type: Map to consistent type(s). If multiple types appear, include all as an array.
-Description: Leave as free text but clean it up.
-Time: Record the current system time (ISO 8601 UTC).
+Output:
 
-3. Output Format:
-Produce only a JSON object (no explanations):
+Return only a JSON object of this form:
+
 {
-  "subway_location": ["<line1>", "<line2>"],
+  "subway_location": ["<line or station>", "<line or station>"],
   "color": ["<color1>", "<color2>"],
   "item_category": "<standardized category or null>",
-  "item_type": ["<standardized type>", "<standardized type>"],
-  "description": "<clean final description>",
+  "item_type": ["<type1>", "<type2>"],
+  "description": "<clean description>",
   "time": "<ISO 8601 UTC timestamp>"
 }
 
-4. Behavior Guidelines:
-- Do not guess missing details.
-- If uncertain, leave field as null.
-- Ensure valid JSON output.
-- Only output the JSON object, nothing else.
-"""
+If a field has a single value it is still an array where the specification says array.
+If you cannot confidently match a value, use "null" or an empty array as appropriate.
 
+Do not output any explanation. Only output the JSON object.
+"""
 
 
 # -----------------------
@@ -496,34 +464,17 @@ def save_found_item_to_vectorstore(json_data: Dict, contact: str) -> int:
 
     found_id = get_next_found_id()
 
-    # --- CLEANER: convert None → "null", lists with None → cleaned lists ---
-def clean_value(v):
-    # Chroma metadata must be str / int / float / bool
-    if v is None:
-        return "null"
-    # Convert list values to a comma-separated string
-    if isinstance(v, list):
-        # filter out any None inside the list
-        return ", ".join(str(x) for x in v if x is not None)
-    # Optionally handle dict/tuple/set just in case
-    if isinstance(v, (dict, tuple, set)):
-        return json.dumps(list(v), default=str)
-    return v
-
-    raw_metadata = {
+    metadata = {
         "record_type": "found",
         "found_id": found_id,
         "subway_location": json_data.get("subway_location", []),
         "color": json_data.get("color", []),
-        "item_category": json_data.get("item_category", "null"),
+        "item_category": json_data.get("item_category", ""),
         "item_type": json_data.get("item_type", []),
         "description": description,
-        "contact": contact or "null",
-        "time": json_data.get("time", "null"),
+        "contact": contact,
+        "time": json_data.get("time"),
     }
-
-    # Apply cleaning
-    metadata = {k: clean_value(v) for k, v in raw_metadata.items()}
 
     try:
         vector_store.add_texts(
@@ -533,7 +484,6 @@ def clean_value(v):
         )
         vector_store.persist()
         return found_id
-
     except Exception as e:
         st.error(f"Error saving found item to vector store: {e}")
         return -1
@@ -622,7 +572,7 @@ st.sidebar.caption("💡 Tip: Distance is model-dependent. Start with 0.4–0.5 
 # -----------------------
 # TOP DASHBOARD METRICS
 # -----------------------
-vector_store = refresh_vector_store()
+
 df_found_for_metrics = get_all_found_items_as_df()
 total_found = len(df_found_for_metrics)
 
@@ -689,16 +639,12 @@ if page.startswith("👮"):
                 st.error("Please upload an image or enter a short description.")
             else:
                 message_content = ""
-                # Send the image as a separate message
                 if uploaded_image:
                     img = Image.open(uploaded_image).convert("RGB")
                     st.image(img, width=220, caption="Preview of found item")
-                    st.session_state.operator_chat.send_message(Image.open(uploaded_image))
-
-                # Send user text as a separate message
+                    message_content += "I have uploaded an image of the found item. "
                 if initial_text:
-                    st.session_state.operator_chat.send_message(initial_text)
-                
+                    message_content += initial_text
 
                 st.session_state.operator_msgs.append(
                     {"role": "user", "content": message_content}
@@ -890,8 +836,7 @@ Description: {extract_field(structured_text, 'Description')}
                     st.error("Please enter a valid email address.")
                 else:
                     st.success("Lost item report received (not stored permanently in DB for this demo).")
-                      # 🔥 REFRESH VECTOR STORE so new found items load
-                    vector_store = refresh_vector_store()
+
                     if vector_store is None:
                         st.info(
                             "Vector store is not configured, so no matches can be shown yet."
@@ -953,6 +898,7 @@ Description: {extract_field(structured_text, 'Description')}
 # ===============================================================
 # PAGE 3: ADMIN – VIEW FOUND ITEMS
 # ===============================================================
+
 if page.startswith("📊"):
     st.markdown('<div class="main-title">📊 Admin: View Stored Found Items</div>', unsafe_allow_html=True)
     st.markdown(
@@ -960,14 +906,10 @@ if page.startswith("📊"):
         unsafe_allow_html=True,
     )
 
-    # 🔥 Force refresh of vector store each time
-    vector_store = refresh_vector_store()
-
     if vector_store is None:
         st.error("Vector store is not available.")
     else:
         df_found = get_all_found_items_as_df()
-
         if df_found.empty:
             st.info("No found items stored yet.")
         else:
